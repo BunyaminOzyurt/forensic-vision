@@ -33,6 +33,7 @@ from forensics.exif_parser import extract_exif
 from forensics.file_carver import detect_appended_payload
 from forensics.hash_lookup import calculate_hashes
 from reports.pdf_generator import generate_forensic_pdf
+from forensics.deepfake_analyzer import analyze_deepfake_heuristic
 
 # CV Motoru Kontrolü
 CV_AVAILABLE = False
@@ -158,7 +159,9 @@ def run_local_analysis(file_bytes: bytes, filename: str) -> dict:
         "bit_planes_path": None
     }
 
-    if CV_AVAILABLE and any(filename.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+    is_image = any(filename.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"])
+
+    if CV_AVAILABLE and is_image:
         try:
             cv_out_dir = os.path.join(CURRENT_DIR, "outputs")
             os.makedirs(cv_out_dir, exist_ok=True)
@@ -167,6 +170,28 @@ def run_local_analysis(file_bytes: bytes, filename: str) -> dict:
                 cv_res = raw_cv
         except Exception as e:
             cv_res["error"] = str(e)
+
+    # CV motoru yoksa → Heuristic ELA+FFT+DCT+Entropi+EXIF analizi
+    if not CV_AVAILABLE and is_image:
+        try:
+            heuristic = analyze_deepfake_heuristic(temp_file_path)
+            if heuristic.get("status") == "success":
+                cv_res = {
+                    "status": "heuristic",
+                    "deepfake_probability": heuristic.get("deepfake_probability", 0.0),
+                    "entropy_score": heuristic.get("entropy_score", 0.0),
+                    "is_stego_suspect": heuristic.get("is_stego_suspect", False),
+                    "verdict": heuristic.get("verdict", "NORMAL"),
+                    "fired_techniques": heuristic.get("fired_techniques", 0),
+                    "confidence_score": heuristic.get("confidence_score", 0.0),
+                    "indicators": heuristic.get("indicators", []),
+                    "technique_results": heuristic.get("technique_results", {}),
+                    "ela_image_path": None,
+                    "fft_spectrum_path": None,
+                    "bit_planes_path": None
+                }
+        except Exception as e:
+            cv_res["heuristic_error"] = str(e)
 
     # Tehdit Skoru Hesapla
     score = 0
@@ -389,30 +414,108 @@ if "report_data" in st.session_state:
 
     # TAB 5: AI & Isı Haritaları
     with tab5:
-        st.markdown("### Bilgisayarlı Görü (CV) & AI Anomali Bulguları")
-        c_cv1, c_cv2, c_cv3 = st.columns(3)
-        with c_cv1:
-            st.metric("Deepfake Olasılığı", f"%{cv_res.get('deepfake_probability', 0.0) * 100:.1f}")
-        with c_cv2:
-            st.metric("Görsel Entropisi", f"{cv_res.get('entropy_score', 0.0)}")
-        with c_cv3:
-            st.metric("Steganografi Şüphesi", "ŞÜPHELİ" if cv_res.get("is_stego_suspect") else "NORMAL")
+        st.markdown("### 🤖 Deepfake & Görüntü Manipülasyon Analizi")
 
-        # Görselleri yan yana göster
+        deepfake_p = cv_res.get("deepfake_probability", 0.0)
+        verdict = cv_res.get("verdict", "")
+        fired = cv_res.get("fired_techniques", 0)
+        confidence = cv_res.get("confidence_score", 1.0)
+        cv_status = cv_res.get("status", "skipped")
+
+        # Analiz motoru etiketi
+        if cv_status == "heuristic":
+            st.info("🔬 **Analiz Motoru:** Heuristik ELA + FFT + DCT + Entropi + EXIF + Renk Kanalı (Torch bağımlılığı yok)")
+        elif cv_status == "success":
+            st.info("🧠 **Analiz Motoru:** Phase 1 CV Engine (EfficientNet / Mediapipe)")
+        else:
+            st.warning("⚠️ Görüntü analizi yapılamadı veya dosya görüntü formatında değil.")
+
+        # Üst metrik satırı
+        c_cv1, c_cv2, c_cv3, c_cv4 = st.columns(4)
+        with c_cv1:
+            pct = deepfake_p * 100
+            if deepfake_p >= 0.70:
+                st.error(f"🚨 Deepfake Olasılığı\n\n**%{pct:.1f}**")
+            elif deepfake_p >= 0.45:
+                st.warning(f"⚠️ Deepfake Olasılığı\n\n**%{pct:.1f}**")
+            elif deepfake_p >= 0.25:
+                st.warning(f"🔶 Deepfake Olasılığı\n\n**%{pct:.1f}** (Düşük Şüphe)")
+            else:
+                st.success(f"✅ Deepfake Olasılığı\n\n**%{pct:.1f}** Normal")
+
+        with c_cv2:
+            verdict_label = {
+                "DEEPFAKE": "🚨 DEEPFAKE",
+                "ŞÜPHELİ_DEEPFAKE": "⚠️ ŞÜPHELİ",
+                "DÜŞÜK_ŞÜPHELİ": "🔶 DÜŞÜK ŞÜPHELİ",
+                "NORMAL": "✅ NORMAL",
+            }.get(verdict, f"— {verdict}")
+            st.metric("Karar", verdict_label)
+
+        with c_cv3:
+            st.metric("Ateşlenen Teknik", f"{fired} / 6")
+
+        with c_cv4:
+            st.metric("Görsel Entropi", f"{cv_res.get('entropy_score', 0.0):.4f}")
+
+        # Deepfake göstergesi ilerleme çubuğu
+        st.markdown("#### 📊 Deepfake Olasılık Ölçeği")
+        st.progress(min(deepfake_p, 1.0))
+        col_l, col_r = st.columns([1, 1])
+        with col_l:
+            st.caption("0% → Kesinlikle Gerçek")
+        with col_r:
+            st.markdown("<div style='text-align:right'>100% → Kesinlikle Deepfake</div>", unsafe_allow_html=True)
+
+        # Uyarı göstergeleri
+        indicators = cv_res.get("indicators", [])
+        if indicators and indicators[0] != "Hiçbir teknik belirgin anomali tespit etmedi.":
+            st.markdown("#### 🚩 Tespit Edilen Anomali Göstergeleri")
+            for ind in indicators:
+                st.error(f"• {ind}")
+        else:
+            st.success("✅ Hiçbir teknik belirgin anomali tespit etmedi.")
+
+        # Teknik detay tablosu
+        technique_results = cv_res.get("technique_results", {})
+        if technique_results:
+            st.markdown("#### 🔬 Teknik Analiz Kırılımı")
+            tech_labels = {
+                "ela": "ELA (Hata Düzeyi)",
+                "fft": "FFT (Frekans)",
+                "dct": "DCT (Blok Tutarsızlık)",
+                "entropy_inconsistency": "Entropi Tutarsızlığı",
+                "exif_anomaly": "EXIF Anomali",
+                "color_channels": "Renk Kanalı"
+            }
+            rows = []
+            for key, label in tech_labels.items():
+                tech = technique_results.get(key, {})
+                rows.append({
+                    "Teknik": label,
+                    "Skor": f"{tech.get('score', 0.0):.3f}",
+                    "Uyarı": "🚨 EVET" if tech.get("fired") else "✅ Hayır",
+                    "Açıklama": tech.get("detail", "-")
+                })
+            st.dataframe(rows, use_container_width=True)
+
+        # Isı haritası görselleri (Phase 1 varsa)
         ela_img = cv_res.get("ela_image_path")
         fft_img = cv_res.get("fft_spectrum_path")
         bit_img = cv_res.get("bit_planes_path")
 
-        cols = st.columns(3)
-        if ela_img and os.path.exists(ela_img):
-            with cols[0]:
-                st.image(ela_img, caption="Hata Düzeyi Analizi (ELA)", use_column_width=True)
-        if fft_img and os.path.exists(fft_img):
-            with cols[1]:
-                st.image(fft_img, caption="FFT Frekans Spektrumu", use_column_width=True)
-        if bit_img and os.path.exists(bit_img):
-            with cols[2]:
-                st.image(bit_img, caption="Bit-Plane Dağılımı", use_column_width=True)
+        if any(p and os.path.exists(p) for p in [ela_img, fft_img, bit_img]):
+            st.markdown("#### 🗺️ Görsel Isı Haritaları (Phase 1 CV)")
+            cols = st.columns(3)
+            if ela_img and os.path.exists(ela_img):
+                with cols[0]:
+                    st.image(ela_img, caption="Hata Düzeyi Analizi (ELA)", use_column_width=True)
+            if fft_img and os.path.exists(fft_img):
+                with cols[1]:
+                    st.image(fft_img, caption="FFT Frekans Spektrumu", use_column_width=True)
+            if bit_img and os.path.exists(bit_img):
+                with cols[2]:
+                    st.image(bit_img, caption="Bit-Plane Dağılımı", use_column_width=True)
 
     # TAB 6: PDF Raporu
     with tab6:

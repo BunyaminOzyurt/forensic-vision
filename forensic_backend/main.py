@@ -27,6 +27,7 @@ from forensics.exif_parser import extract_exif
 from forensics.file_carver import detect_appended_payload
 from forensics.hash_lookup import calculate_hashes
 from reports.pdf_generator import generate_forensic_pdf
+from forensics.deepfake_analyzer import analyze_deepfake_heuristic
 
 # 1. Aşama Computer Vision motoru kontrolü
 CV_AVAILABLE = False
@@ -193,7 +194,7 @@ async def analyze_file(file: UploadFile = File(...)):
     # 4. File Carving & Appended Payload Analizi
     carver_result = detect_appended_payload(saved_file_path)
 
-    # 5. Computer Vision & Isı Haritaları (Phase 1 entegrasyonu)
+    # 5. Computer Vision & Isı Haritaları (Phase 1 entegrasyonu) veya Heuristic Deepfake
     cv_result = {
         "status": "skipped",
         "deepfake_probability": 0.0,
@@ -204,13 +205,37 @@ async def analyze_file(file: UploadFile = File(...)):
         "bit_planes_path": None
     }
 
-    if CV_AVAILABLE and file_ext.lower() in [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"]:
+    is_image_file = file_ext.lower() in [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"]
+
+    if CV_AVAILABLE and is_image_file:
         try:
             cv_res_raw = cv_engine.analyze_media(saved_file_path, output_dir=OUTPUTS_DIR)
             if cv_res_raw.get("status") == "success":
                 cv_result = cv_res_raw
         except Exception as e:
             cv_result["message"] = f"CV motoru analizi sırasında hata: {str(e)}"
+
+    # CV motoru yoksa → Heuristic ELA+FFT+DCT+Entropi+EXIF analizi
+    if not CV_AVAILABLE and is_image_file:
+        try:
+            heuristic = analyze_deepfake_heuristic(saved_file_path)
+            if heuristic.get("status") == "success":
+                cv_result = {
+                    "status": "heuristic",
+                    "deepfake_probability": heuristic.get("deepfake_probability", 0.0),
+                    "entropy_score": heuristic.get("entropy_score", 0.0),
+                    "is_stego_suspect": heuristic.get("is_stego_suspect", False),
+                    "verdict": heuristic.get("verdict", "NORMAL"),
+                    "fired_techniques": heuristic.get("fired_techniques", 0),
+                    "confidence_score": heuristic.get("confidence_score", 0.0),
+                    "indicators": heuristic.get("indicators", []),
+                    "technique_results": heuristic.get("technique_results", {}),
+                    "ela_image_path": None,
+                    "fft_spectrum_path": None,
+                    "bit_planes_path": None
+                }
+        except Exception as e:
+            cv_result["heuristic_error"] = str(e)
 
     # 6. Genel Tehdit & Risk Puanlaması
     threat_assessment = compute_threat_assessment(
