@@ -29,6 +29,12 @@ ENV/
 # Output & Generated test files
 outputs/
 sample_test.jpg
+uploads/
+reports_generated/
+*.pdf
+forensic_backend/uploads/
+forensic_backend/outputs/
+forensic_backend/reports_generated/
 
 # OS
 .DS_Store
